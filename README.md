@@ -1,72 +1,45 @@
 # Audio Podcast Pipeline
 
-A desktop application that turns a written podcast script into a fully produced MP3 episode — multi-voice, with overlaps, interruptions, configurable production styles and background music — using an LLM as an audio director and a TTS engine for the synthesis.
+A desktop application that takes a written podcast script and produces a finished MP3 episode: two voices, overlaps where they belong, background music, the lot. It uses a language model as an audio director and a TTS provider for the actual synthesis.
 
-The application was built as part of an enterprise consulting toolkit; the source code is not public. This repository documents what the product does and the engineering decisions behind it.
+The application is part of a private corporate toolkit and the source code is not published. This README describes what the tool does and the choices that shaped it.
 
----
+## What you give it, what it gives back
 
-## What it does
+Input is a script tagged with `HOST:` and `EXPERT:` lines, in Word or plain text. Output is an MP3 episode. Between those two ends, the application does four things.
 
-The user drops a script tagged with `HOST:` and `EXPERT:` lines (Word or plain text) and the application:
+First, it reads the script and adds direction. A pass called Auto-Direct goes through the dialogue and marks tone shifts, places where the Expert is allowed to interrupt, places where the Host can react with a short overlap, hesitations, and emphasis. The annotations are scoped to the production style the user picked: Classic for clean turn-taking, Formal for longer pauses and no overlaps at all, Debate for frequent interjections and a faster pace. The director prompt is style-aware; switching styles produces three perceptibly different episodes from the same script.
 
-1. **Annotates** the script with an "Auto-Direct" pass: the LLM marks tone shifts, allowed interruptions, overlap moments, hesitations and emphasis, in line with the chosen production style (Classic, Formal or Debate).
-2. **Renders** each turn segment-by-segment with the selected voices — one voice for the Host, one for the Expert, both customizable from a curated voice catalog (broadcaster-grade voices, Spanish/English/regional Latam variants).
-3. **Mixes** the segments with the chosen background music preset, at the configured volume, with fades and crossfades.
-4. **Exports** an MP3 episode ready to publish.
+Second, it renders each turn through TTS. The user picks one voice for the Host and one for the Expert from a curated catalogue, and each segment is synthesised on its own. Segment-level rendering matters because the user wants to be able to re-roll a single line without rebuilding the whole episode.
 
-The user can edit segments before synthesis, swap voices per role, and re-render only the changed parts.
+Third, it mixes. The cleanly rendered segments go into a mixer that applies the chosen background music preset, sets the volume, adds fades and crossfades, and crucially adds the overlaps that the director marked. TTS engines render every line in isolation; overlap is something the pipeline imposes on top, not something it asks the engine for.
 
----
+Fourth, it exports. One MP3 file, ready to publish.
 
-## Why it exists
+## Why the architecture looks like this
 
-Off-the-shelf TTS produces flat narration: each line is read in isolation, there are no overlaps, no interjections, no dramatic pauses, and the result sounds like a screen reader. For internal communications and client-facing podcasts, that is unusable.
+The honest reason the application exists is that off-the-shelf TTS sounds like a screen reader. Each line is read on its own, there is no overlap, no interjection, no pacing, and the result is unusable for anything client-facing. Closing that gap turned out to be less about picking a better voice and more about everything around the voice.
 
-The pipeline addresses three gaps:
+The big lever is the director, not the renderer. Lifting perceived quality came from changing the request to the engine from "render this line" to "render this line, given this annotated direction." Most of the engineering investment lives in the director prompt and the segment-merge logic, not in the TTS call itself.
 
-- **Conversational realism.** Real podcasts have the Expert *talking over* the Host's "right, right" or *cutting in* mid-sentence. Auto-Direct decides where these moments fit, given the script and the selected style, and the renderer overlaps the audio accordingly.
-- **Style as a first-class control.** The same script rendered as *Classic* (clean turn-taking), *Formal* (no overlaps, longer pauses) and *Debate* (frequent interjections, faster pace) produces three perceptibly different episodes. The director prompt is style-aware.
-- **Production polish without a producer.** Background music, intro stingers, fades and gain staging are presets the user can pick from a dropdown; the pipeline applies them consistently across episodes.
+Overlaps are a post-process. We tried prompting the TTS engine to overlap turns; it cannot. We tried generating both turns separately and crashing them together with a fixed offset; it sounded mechanical. The current pipeline lets the director annotate where overlap windows should live (length, where in the previous turn they begin, what kind of reaction they are), and the mixer assembles them after rendering. This also keeps the TTS layer pluggable across providers.
 
----
+Style sits in the director, not in the voice. The same voice can deliver Formal and Debate at perceptibly different paces because what changes between them is the director prompt and the mixer's pause-and-overlap policy. Voice selection stays orthogonal to style, which keeps the user's two decisions independent.
 
-## Functional capabilities
+The voice catalogue is short on purpose. The application exposes maybe a dozen voices that work well for the use case (broadcaster cadence, clean diction, decent coverage of EN, ES, MX, CO, US accents) instead of dumping every voice the provider supports on the user. That decision came out of the companion utilities described below.
 
-| Capability | What it covers |
-|---|---|
-| Segment editor | Edit, delete or insert turns before synthesis; nothing is hidden |
-| Multi-voice selection | Pick a voice per role from a catalog of broadcaster, conversational and energetic voices in EN / ES / MX / CO / US accents |
-| Auto-Direct | LLM annotates the script with tone, overlaps, interruptions and emphasis, scoped to the chosen production style |
-| Production styles | Classic / Formal / Debate, each tuned with its own director prompt |
-| Background music | Preset library (corporate, lounge, cinematic, soft piano, futuristic synth, epic drone, strings, tech minimal…) with adjustable per-episode volume |
-| Segment-by-segment render | Re-render only edited segments, not the whole episode |
-| Output | MP3 episode ready to publish |
+## Companion scripts
 
----
+Alongside the application sits a folder of around sixty standalone scripts written during development. They list voices, generate sample readings of fixed text in different accents, compare conversational voices against broadcaster voices, run pitch and pacing experiments, and produce reference renders of the same paragraph with a dozen different voices side by side. None of them are user-facing. Their job was to inform the curated catalogue and the default style settings; they are kept around as documentation of the empirical work.
 
-## Engineering choices that mattered
+## Distribution
 
-- **TTS quality is bounded by the prompt the engine receives, not by the model.** Lifting the perceived quality required moving from "render this line" to "render this line *given this annotated direction*" — emphasis tags, interruption markers, overlap windows. Most of the engineering investment is in the director prompt and the segment-merge logic, not in the TTS call itself.
-- **Overlap is a post-process, not a TTS feature.** TTS engines render each segment cleanly; overlaps are added at the mixing stage, with windows defined by the director's annotations. This keeps the renderer pluggable across providers.
-- **Style is encoded in the director, not the voice.** Switching styles does not change the voice — it changes the director prompt and the mixer's pause/overlap policy. The same voice can deliver Formal and Debate at perceptibly different paces.
-- **Voice catalog is curated, not exhaustive.** The application exposes a short, opinionated list of voices that work well for the use case (broadcaster cadence, clean diction, Spanish/English/Latam coverage) instead of dumping every available voice on the user.
-- **Plug-and-play distribution.** The application is shipped as a one-click installer that provisions Python, the virtual environment, dependencies and launches the local server. The target user is not a developer.
-
----
-
-## Companion utilities
-
-Alongside the main application, the project ships ~60 standalone scripts used during development to evaluate voice catalogs, accents and rendering strategies — voice listing, regional sample generators (ES/MX/CO/US), conversational vs. broadcaster comparisons, pitch and pacing experiments. These are not user-facing but document the empirical work behind the curated voice catalog.
-
----
+The application ships as a one-click installer. Double-click sets up Python, creates a virtual environment, installs the dependencies, and launches the local server. The user this is built for is a consultant putting together an internal podcast, not a developer.
 
 ## Status
 
-Active. v1.0 distributed as a self-contained installer. Auto-Direct, multi-voice, BGM presets and segment-level re-render are in production use.
+Version one is in production. Auto-Direct, multi-voice rendering, the BGM preset library, and segment-level re-render are all shipped.
 
----
+## About this repository
 
-## What this repository contains
-
-This README. The code lives in a private corporate repository and is not redistributable.
+You will only find this README here. The code is not public.
